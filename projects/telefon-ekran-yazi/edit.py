@@ -72,24 +72,63 @@ def persp_coeffs(dst, src):
 SW, SH = 1000, 450  # sanal ekran çözünürlüğü
 
 
-def screen_image(text, color):
-    im = Image.new("RGB", (SW, SH), color)
-    size = 190
+def text_alpha(text, k):
+    """Yazı maskesi; k (0..1) kelimenin beliriş animasyonu."""
+    im = Image.new("L", (SW, SH), 0)
+    size = 200
     while True:
         fnt = ImageFont.truetype(FONT, size)
-        if fnt.getlength(text) < SW * 0.86 or size < 40:
+        fnt.set_variation_by_name(b"Medium Italic")
+        if fnt.getlength(text) < SW * 0.78 or size < 40:
             break
         size -= 6
-    d = ImageDraw.Draw(im)
-    d.text((SW / 2, SH / 2), text, font=fnt, fill=(250, 244, 250), anchor="mm")
+    fnt = ImageFont.truetype(FONT, int(size * (0.93 + 0.07 * k)))
+    fnt.set_variation_by_name(b"Medium Italic")
+    ImageDraw.Draw(im).text((SW / 2, SH / 2 + (1 - k) * 12), text, font=fnt, fill=255, anchor="mm")
     return im
 
 
 def text_at(t):
     for a, b, w in WORDS:
         if a <= t < b:
-            return w
-    return None
+            return w, float(np.clip((t - a) / 0.15, 0, 1))
+    return None, 0.0
+
+
+TEXT_RGB = np.array([248, 234, 244], np.float32)
+_noise = np.random.default_rng(1)
+
+
+def replace_text(fr, m, c, word, k):
+    """Ekranın gerçek dokusunu korur: eski harfleri çevreden doldurur, yeni yazıyı ekler."""
+    ys, xs = np.nonzero(m)
+    y0, y1 = max(ys.min() - 20, 0), min(ys.max() + 20, fr.shape[0])
+    x0, x1 = max(xs.min() - 20, 0), min(xs.max() + 20, fr.shape[1])
+    sub = fr[y0:y1, x0:x1].astype(np.float32)
+    ms = m[y0:y1, x0:x1]
+    lum = sub.mean(2)
+    base = np.median(lum[ms])
+    textlike = (sub[..., 2] > sub[..., 0] - 18) & (lum > base + 12)
+    old = ndimage.binary_dilation(ms & textlike, iterations=7) & ms
+    valid = (ms & ~old).astype(np.float32)
+    num = ndimage.gaussian_filter(sub * valid[..., None], (14, 14, 0))
+    den = ndimage.gaussian_filter(valid, 14)[..., None] + 1e-4
+    fill = num / den
+    fill += _noise.normal(0, 2.0, fill.shape)  # kayıt grenini taklit et
+    sub[old] = fill[old]
+    co = persp_coeffs(c - [x0, y0], [(0, 0), (SW, 0), (SW, SH), (0, SH)])
+    a = text_alpha(word, k).transform((x1 - x0, y1 - y0), Image.PERSPECTIVE, tuple(co), Image.BICUBIC)
+    a = np.asarray(a.filter(ImageFilter.GaussianBlur(1.1)), np.float32)[..., None] / 255
+    a *= ndimage.binary_erosion(ms, iterations=1)[..., None] * k
+    sub = sub * (1 - a) + TEXT_RGB * a
+    # parmak çevresinde orijinal kareyi koru (yumuşak geçişle)
+    orig = fr[y0:y1, x0:x1].astype(np.float32)
+    skin = (orig[..., 0] > orig[..., 2] + 25) & (lum > base + 15)
+    prot = ndimage.gaussian_filter(ndimage.binary_dilation(skin, iterations=5).astype(np.float32), 3)
+    keep = np.clip(prot * 1.6, 0, 1)[..., None]
+    sub = sub * (1 - keep) + orig * keep
+    fr[y0:y1, x0:x1] = np.clip(sub, 0, 255).astype(np.uint8)
+    return fr
 
 
 def timeline():
@@ -118,7 +157,7 @@ def main():
             fr = read_frame(t)
             cache = {t: fr}
         fr = fr.copy()
-        word = text_at(t) if t >= 4.0 else None
+        word, k = text_at(t) if t >= 4.0 else (None, 0.0)
         m = screen_mask(fr) if word else None
         if m is not None:
             c = corners(m)
@@ -130,16 +169,10 @@ def main():
             ImageDraw.Draw(poly).polygon([tuple(p) for p in c], fill=1)
             poly = np.asarray(poly, bool)
             f16 = fr.astype(np.int16)
-            text = (f16.min(2) > 185) & (f16[..., 2] >= f16[..., 1]) & poly
+            # beyaz-pembe yazı: mavi kanal yüksek (tende mavi, kırmızının çok altında)
+            text = (f16.min(2) > 185) & (f16[..., 2] >= f16[..., 1]) & (f16[..., 2] > f16[..., 0] - 18) & poly
             m = ndimage.binary_fill_holes(ndimage.binary_closing(m | text, iterations=2)) & poly
-            col = tuple(int(v) for v in np.median(fr[m & ~(fr.min(2) > 180)], axis=0))
-            scr = screen_image(word, col)
-            co = persp_coeffs(c, [(0, 0), (SW, 0), (SW, SH), (0, SH)])
-            warped = np.asarray(scr.transform((1180, 2556), Image.PERSPECTIVE, tuple(co),
-                                              Image.BICUBIC), np.float32)
-            a = Image.fromarray((ndimage.binary_erosion(m, iterations=2) * 255).astype(np.uint8))
-            a = np.asarray(a.filter(ImageFilter.GaussianBlur(1.5)), np.float32)[..., None] / 255
-            fr = (fr * (1 - a) + warped * a).astype(np.uint8)
+            fr = replace_text(fr, m, c, word, k)
         else:
             prev_c = None
         x0, y0, x1, y1 = CROP
