@@ -158,10 +158,13 @@ def main():
             cache = {t: fr}
         fr = fr.copy()
         m = screen_mask(fr) if t >= 4.9 else None
-        if m is not None:
-            c = corners(m)
-            if prev_c is not None and np.abs(c - prev_c).max() < 60:
-                c = prev_c * 0.5 + c * 0.5  # titreşim yumuşatma
+        if m is not None or (prev_c is not None and t >= 4.9):
+            if m is None:
+                c = prev_c  # hızlı kaydırmada tespit kaçarsa son konumu kullan
+            else:
+                c = corners(m)
+                if prev_c is not None and np.abs(c - prev_c).max() < 60:
+                    c = prev_c * 0.5 + c * 0.5  # titreşim yumuşatma
             prev_c = c
             poly = Image.new("L", (1180, 2556), 0)
             # silme alanı: kenarlardan çıkan/giren eski yazı için dörtgeni dikeyde uzat
