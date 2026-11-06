@@ -25,7 +25,7 @@ WORDS = [
 ]
 # kurgu: (kaynak_başlangıç, kaynak_bitiş) parçaları; bitiş==başlangıç ise donmuş kare
 FREEZE = 0.8
-SEGMENTS = [(0.25, 4.7), (4.95, 8.45), (8.45, 8.45), (1.9, 2.9)]
+SEGMENTS = [(0.5, 4.7), (4.95, 8.45), (8.45, 8.45), (1.9, 2.9)]
 
 
 def read_frame(t):
